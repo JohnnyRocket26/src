@@ -1,4 +1,11 @@
-"""Geocode an address table and save the result to a geodatabase.
+"""Geocode an address table and save matched locations to a geodatabase.
+
+Workflow:
+    1. Read the input table, locator, optional address fields, and output settings.
+    2. Use selected address fields or detect likely fields from common names.
+    3. Validate the inputs and resolve the output file geodatabase and feature-class name.
+    4. Run Geocode Addresses to create point features with locator match results.
+    5. Confirm the output exists, set the derived output parameter, and report completion.
 
 Script tool parameters (in order):
     0  Input Table            (Table View / File)         Required, Input
@@ -78,12 +85,14 @@ def get_default_geodatabase() -> str:
 
 
 def main() -> None:
+    # Read tool settings and use project defaults when optional output settings are blank.
     input_table = arcpy.GetParameterAsText(0)
     locator = arcpy.GetParameterAsText(1) or DEFAULT_LOCATOR
     country = arcpy.GetParameterAsText(6)
     output_gdb = arcpy.GetParameterAsText(7) or get_default_geodatabase()
     output_name = arcpy.GetParameterAsText(8) or DEFAULT_OUTPUT_NAME
 
+    # Fail early if the input table, address mapping, or output geodatabase is invalid.
     if not input_table:
         raise ValueError("An input table is required.")
     if not arcpy.Exists(input_table):
@@ -99,6 +108,7 @@ def main() -> None:
 
     output_fc = os.path.join(output_gdb, output_name)
 
+    # Geocode the records and publish the created feature class as the tool output.
     arcpy.AddMessage(f"Geocoding {input_table} with {locator}...")
     arcpy.geocoding.GeocodeAddresses(
         in_table=input_table,
