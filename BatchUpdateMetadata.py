@@ -1,8 +1,21 @@
 # Description: Batch update metadata for layers in the active ArcGIS Pro map.
 # Summary: Applies provided tags, summary, and description to each layer's source metadata, then saves and synchronizes it.
+# Script tool parameters: 0 Layers, 1 Tags, 2 Summary, 3 Description, 4 Append data (Boolean checkbox; unchecked overwrites).
 
-import os
 import arcpy
+
+
+def append_metadata_value(existing_value, new_value, separator):
+    """Append a supplied value to existing metadata without duplicating the entire value."""
+    new_value = new_value.strip()
+    existing_value = (existing_value or "").strip()
+
+    if not new_value or new_value == existing_value:
+        return existing_value
+    if not existing_value:
+        return new_value
+    return f"{existing_value}{separator}{new_value}"
+
 
 def batch_update_metadata():
     # 1. Get user inputs from the ArcGIS Tool dialog
@@ -10,6 +23,15 @@ def batch_update_metadata():
     new_tags = arcpy.GetParameterAsText(1)
     new_summary = arcpy.GetParameterAsText(2)
     new_description = arcpy.GetParameterAsText(3)
+    append_parameter = arcpy.GetParameterAsText(4).strip().lower()
+
+    if append_parameter not in {"true", "false"}:
+        arcpy.AddError(
+            "Append data must be configured as a Boolean checkbox parameter "
+            "at index 4 in the script tool."
+        )
+        return
+    append_data = append_parameter == "true"
 
     # 2. Parse the multiple layers input into a clean list
     layer_list = layer_input.split(";")
@@ -57,13 +79,25 @@ def batch_update_metadata():
                 arcpy.AddWarning(f"Metadata for data source of '{layer_name}' is read-only. Skipping.")
                 continue
 
-            # Update specific fields if the user typed text into the boxes
+            # Update supplied fields, appending when the checkbox is selected.
             if new_tags:
-                md.tags = new_tags
+                md.tags = (
+                    append_metadata_value(md.tags, new_tags, ", ")
+                    if append_data
+                    else new_tags
+                )
             if new_summary:
-                md.summary = new_summary
+                md.summary = (
+                    append_metadata_value(md.summary, new_summary, "\n")
+                    if append_data
+                    else new_summary
+                )
             if new_description:
-                md.description = new_description
+                md.description = (
+                    append_metadata_value(md.description, new_description, "\n")
+                    if append_data
+                    else new_description
+                )
 
             # Save the metadata permanently to the underlying source
             md.save()
