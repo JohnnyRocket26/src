@@ -1,18 +1,18 @@
 """ArcGIS Pro script tool: bridge flood risk scoring.
 
 Parameters
-0. Input bridge table (Table View / feature class / CSV)  - Required, Input
+0. Input bridge feature layer / table (editable)          - Required, Input
 1. Base year (Long)                                      - Optional, Input, default = current year
-2. Output risk table (Table)                              - Required, Output
-   Set the parameter's default to the project default geodatabase, or pass
-   just a table name to have it created in the default geodatabase.
+2. Updated input (Feature Layer / Table)                  - Derived, Output
+   (reconfigure from Required Output; it is set to the input dataset)
 3. Output charts folder (Folder)                          - Optional, Input
 """
 # Workflow:
 #   1. Read the required fields from the input table into a pandas DataFrame.
 #   2. Score each bridge on age, remaining life (end of life minus base year) and
 #      deck/beam material, sum the scores and classify into a risk category.
-#   3. Write the results to a new table (default geodatabase if no path given).
+#   3. Append bridge_risk_score and risk_category fields to the input and
+#      populate them (only selected rows are updated if the layer has a selection).
 #   4. Optionally save summary charts and report summary statistics.
 import datetime
 import os
@@ -95,43 +95,34 @@ def score_bridges(df, base_year):
     df['age_risk'] = df['age'].apply(score_age)
     df['life_risk'] = df['remaining_life'].apply(score_life)
     df['material_risk'] = df.apply(lambda x: score_material(x['deck_material'], x['beam_type']), axis=1)
-    df['total_flood_risk_score'] = df['age_risk'] + df['life_risk'] + df['material_risk']
-    df['risk_category'] = df['total_flood_risk_score'].apply(classify_risk)
+    df['bridge_risk_score'] = df['age_risk'] + df['life_risk'] + df['material_risk']
+    df['risk_category'] = df['bridge_risk_score'].apply(classify_risk)
     return df
 
 
-def write_table(df, out_path):
-    # Create the output table, add typed fields, then insert one row per bridge
-    out_dir, out_name = os.path.split(out_path)
-    if not out_dir:
-        out_dir = default_geodatabase()
-    arcpy.management.CreateTable(out_dir, out_name)
-    out_path = os.path.join(out_dir, out_name)
+def update_input(df, table):
+    # Append the result fields to the input (if absent) and populate them by OID
+    existing = {f.name.lower(): f for f in arcpy.ListFields(table)}
+    if 'bridge_risk_score' not in existing:
+        arcpy.management.AddField(table, 'bridge_risk_score', 'LONG')
+    if 'risk_category' not in existing:
+        arcpy.management.AddField(table, 'risk_category', 'TEXT', field_length=20)
+    # Re-list so the real (possibly differently cased) names are used
+    actual = {f.name.lower(): f.name for f in arcpy.ListFields(table)}
+    score_field = actual['bridge_risk_score']
+    cat_field = actual['risk_category']
 
-    text = [('structure_number', 50), ('condition', 50), ('deck_material', 100),
-            ('beam_type', 100), ('risk_category', 20)]
-    for name, length in text:
-        if name in df.columns:
-            arcpy.management.AddField(out_path, name, 'TEXT', field_length=length)
-    arcpy.management.AddField(out_path, 'source_oid', 'LONG')
-    arcpy.management.AddField(out_path, 'age', 'DOUBLE')
-    arcpy.management.AddField(out_path, 'expected_end_of_life', 'DOUBLE')
-    arcpy.management.AddField(out_path, 'total_flood_risk_score', 'LONG')
+    results = {int(oid): (int(s), c) for oid, s, c in
+               zip(df['source_oid'], df['bridge_risk_score'], df['risk_category'])}
+    oid_field = arcpy.Describe(table).OIDFieldName
 
-    cols = [c for c in ['source_oid', 'structure_number', 'condition', 'age', 'expected_end_of_life',
-                        'deck_material', 'beam_type', 'total_flood_risk_score', 'risk_category']
-            if c in df.columns]
-
-    # Convert pandas/numpy NaN and scalar types to values the cursor accepts
-    def clean(v):
-        if pd.isnull(v):
-            return None
-        return v.item() if hasattr(v, 'item') else v
-
-    with arcpy.da.InsertCursor(out_path, cols) as cur:
-        for row in df[cols].itertuples(index=False):
-            cur.insertRow([clean(v) for v in row])
-    return out_path
+    updated = 0
+    with arcpy.da.UpdateCursor(table, [oid_field, score_field, cat_field]) as cur:
+        for oid, _, _ in cur:
+            if oid in results:
+                cur.updateRow([oid, *results[oid]])
+                updated += 1
+    return updated
 
 
 def save_charts(df, folder):
@@ -142,7 +133,7 @@ def save_charts(df, folder):
 
     os.makedirs(folder, exist_ok=True)
     fig, ax = plt.subplots(figsize=(10, 6))
-    ax.hist(df['total_flood_risk_score'], bins=20, color='teal')
+    ax.hist(df['bridge_risk_score'], bins=20, color='teal')
     ax.set(title='Distribution of Flood Risk Scores for Bridges',
            xlabel='Risk Score (0 - 100)', ylabel='Number of Bridges')
     fig.savefig(os.path.join(folder, 'flood_risk_distribution.png'))
@@ -159,7 +150,6 @@ def save_charts(df, folder):
 
 def main():
     in_table = arcpy.GetParameterAsText(0)
-    out_table = arcpy.GetParameterAsText(2)
     charts_folder = arcpy.GetParameterAsText(3)
     base_year = int(arcpy.GetParameterAsText(1) or datetime.date.today().year)
 
@@ -167,9 +157,10 @@ def main():
     df = score_bridges(load_table(in_table), base_year)
     arcpy.AddMessage(f"Scored {len(df)} bridges using base year {base_year}.")
 
-    result = write_table(df, out_table)
-    arcpy.SetParameterAsText(2, result)
-    arcpy.AddMessage(f"Output table: {result}")
+    updated = update_input(df, in_table)
+    arcpy.SetParameterAsText(2, in_table)
+    arcpy.AddMessage(f"Updated {updated} rows in {in_table} "
+                     "(added risk_category and bridge_risk_score).")
 
     if charts_folder:
         save_charts(df, charts_folder)
@@ -177,7 +168,7 @@ def main():
 
     for cat, n in df['risk_category'].value_counts().items():
         arcpy.AddMessage(f"{cat}: {n}")
-    s = df['total_flood_risk_score']
+    s = df['bridge_risk_score']
     arcpy.AddMessage(f"Max score: {s.max()}, Min score: {s.min()}, Mean score: {s.mean():.1f}")
 
 
