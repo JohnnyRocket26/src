@@ -5,7 +5,6 @@ Parameters
 1. Base year (Long)                                      - Optional, Input, default = current year
 2. Updated input (Feature Layer / Table)                  - Derived, Output
    (reconfigure from Required Output; it is set to the input dataset)
-3. Output charts folder (Folder)                          - Optional, Input
 """
 # Workflow:
 #   1. Read the required fields from the input table into a pandas DataFrame.
@@ -13,9 +12,8 @@ Parameters
 #      deck/beam material, sum the scores and classify into a risk category.
 #   3. Append bridge_risk_score and risk_category fields to the input and
 #      populate them (only selected rows are updated if the layer has a selection).
-#   4. Optionally save summary charts and report summary statistics.
+#   4. Report summary statistics.
 import datetime
-import os
 import arcpy
 import pandas as pd
 
@@ -49,8 +47,10 @@ def load_table(table):
     oid_field = arcpy.Describe(table).OIDFieldName
     src = [oid_field] + list(ids.values()) + list(names.values())
     out = ['source_oid'] + list(ids.keys()) + list(names.keys())
+    rows = []
     with arcpy.da.SearchCursor(table, src) as cur:
-        return pd.DataFrame([list(r) for r in cur], columns=out)
+        rows = [list(r) for r in cur]
+    return pd.DataFrame(rows, columns=out)
 
 
 # Scoring: higher = greater flood risk. Age, remaining life and material scores
@@ -125,35 +125,11 @@ def update_input(df, table):
     return updated
 
 
-def save_charts(df, folder):
-    # Score histogram and category bar chart (non-interactive backend for GP use)
-    import matplotlib
-    matplotlib.use('Agg')
-    import matplotlib.pyplot as plt
-
-    os.makedirs(folder, exist_ok=True)
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.hist(df['bridge_risk_score'], bins=20, color='teal')
-    ax.set(title='Distribution of Flood Risk Scores for Bridges',
-           xlabel='Risk Score (0 - 100)', ylabel='Number of Bridges')
-    fig.savefig(os.path.join(folder, 'flood_risk_distribution.png'))
-    plt.close(fig)
-
-    order = ['Low Risk', 'Medium Risk', 'High Risk']
-    counts = df['risk_category'].value_counts().reindex(order, fill_value=0)
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.bar(order, counts.values, color='firebrick')
-    ax.set(title='Bridge Flood Risk Categories', ylabel='Count', xlabel='Risk Category')
-    fig.savefig(os.path.join(folder, 'flood_risk_categories.png'))
-    plt.close(fig)
-
-
 def main():
     in_table = arcpy.GetParameterAsText(0)
-    charts_folder = arcpy.GetParameterAsText(3)
     base_year = int(arcpy.GetParameterAsText(1) or datetime.date.today().year)
 
-    # Score, write results, then optional charts and summary
+    # Score, write results, then report summary
     df = score_bridges(load_table(in_table), base_year)
     arcpy.AddMessage(f"Scored {len(df)} bridges using base year {base_year}.")
 
@@ -161,10 +137,6 @@ def main():
     arcpy.SetParameterAsText(2, in_table)
     arcpy.AddMessage(f"Updated {updated} rows in {in_table} "
                      "(added risk_category and bridge_risk_score).")
-
-    if charts_folder:
-        save_charts(df, charts_folder)
-        arcpy.AddMessage(f"Charts saved to {charts_folder}")
 
     for cat, n in df['risk_category'].value_counts().items():
         arcpy.AddMessage(f"{cat}: {n}")
