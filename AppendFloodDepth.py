@@ -16,9 +16,9 @@ The input is modified in place, so back it up first.
 """
 import arcpy
 KEY_FIELD = "COMPKEY"
-DEFAULT_VALUE_FIELD = "MEAN"
-LOW_MAX = 0.2
-MEDIUM_MAX = 0.3
+DEFAULT_VALUE_FIELD = "MEAN_gridcode"
+LOW_MAX = 1.5
+MEDIUM_MAX = 2.9
 def find_field(table, name):
     """Return the actual field name matching `name` case-insensitively."""
     for f in arcpy.ListFields(table):
