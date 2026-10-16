@@ -25,13 +25,19 @@ def batch_update_metadata():
     new_description = arcpy.GetParameterAsText(3)
     append_parameter = arcpy.GetParameterAsText(4).strip().lower()
 
-    if append_parameter not in {"true", "false"}:
-        arcpy.AddError(
-            "Append data must be configured as a Boolean checkbox parameter "
-            "at index 4 in the script tool."
-        )
+    # A blank value (unchecked/unset or non-Boolean parameter) means overwrite.
+    if append_parameter in {"true", "yes", "1"}:
+        append_data = True
+    elif append_parameter in {"", "false", "no", "0", "#"}:
+        append_data = False
+        if not append_parameter:
+            arcpy.AddWarning(
+                "Append data parameter (index 4) was blank; overwriting existing values. "
+                "Set it as a Boolean checkbox in the script tool properties."
+            )
+    else:
+        arcpy.AddError(f"Unrecognised Append data value '{append_parameter}'. Use true or false.")
         return
-    append_data = append_parameter == "true"
 
     # 2. Parse the multiple layers input into a clean list
     layer_list = layer_input.split(";")
