@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-Script tool (draft): generate metadata tags for multiple layers in the active map
-from each layer's attribute names, field data types and a sample of its records.
-A summary and description are also generated; existing text is kept unless
-"Overwrite Summary/Description" is checked. Other elements are left unchanged.
+Generates metadata tags, a summary, and a description for selected feature layers
+in the active ArcGIS Pro map. Tags are derived from layer and attribute names,
+field types, and repeated values in a sample of records. Existing tags, summary and
+description are each preserved unless their own overwrite option is enabled.
+For enterprise geodatabase data, an owner connection can be supplied
+to write source metadata; otherwise, writable layer metadata is used when
+source metadata is read-only.
 
 Target environment: ArcGIS Pro 3.5, Python 3.11.
 """
@@ -11,6 +14,7 @@ Target environment: ArcGIS Pro 3.5, Python 3.11.
 import os
 import re
 from collections import Counter
+from html import escape
 
 import arcpy
 
@@ -19,9 +23,10 @@ import arcpy
 PARAMETERS = (
     (0, "Target Features", "GPFeatureLayer (multivalue)", "Input", True, None),
     (1, "Sample Size", "GPLong", "Input", False, 100),
-    (2, "Keep Existing Tags", "GPBoolean", "Input", False, True),
-    (3, "SQL Server Connection (owner of the data)", "DEWorkspace", "Input", False, None),
-    (4, "Overwrite Summary/Description", "GPBoolean", "Input", False, False),
+    (2, "Overwrite Existing Tags", "GPBoolean", "Input", False, False),
+    (3, "Overwrite Summary", "GPBoolean", "Input", False, False),
+    (4, "Overwrite Description", "GPBoolean", "Input", False, False),
+    (5, "SQL Server Connection (owner of the data)", "DEWorkspace", "Input", False, None),
 )
 
 MAX_TAGS = 30
@@ -56,16 +61,16 @@ def get_parameters():
     if sample_size < 1:
         raise ValueError("Sample Size must be 1 or greater.")
 
-    keep_text = arcpy.GetParameterAsText(2).strip().lower()
-    keep_existing = PARAMETERS[2][5] if keep_text in ("", "#") else keep_text in ("true", "yes", "1")
-    connection = arcpy.GetParameterAsText(3).strip().strip("'")
+    overwrite_tags = arcpy.GetParameterAsText(2).strip().lower() in ("true", "yes", "1")
+    overwrite_summary = arcpy.GetParameterAsText(3).strip().lower() in ("true", "yes", "1")
+    overwrite_description = arcpy.GetParameterAsText(4).strip().lower() in ("true", "yes", "1")
+    connection = arcpy.GetParameterAsText(5).strip().strip("'")
     if connection == "#":
         connection = ""
     if connection and not arcpy.Exists(connection):
         raise ValueError(f"Database connection '{connection}' does not exist.")
 
-    overwrite_text = arcpy.GetParameterAsText(4).strip().lower() in ("true", "yes", "1")
-    return names, sample_size, keep_existing, connection, overwrite_text
+    return names, sample_size, overwrite_tags, overwrite_summary, overwrite_description, connection
 
 
 def find_layers(active_map, names):
@@ -161,22 +166,22 @@ def build_summary(layer, profile, record_count):
 
 def build_description(layer, profile, record_count, sample_size):
     """Create a longer description listing the attributes and common values."""
-    lines = [build_summary(layer, profile, record_count), ""]
+    # Metadata descriptions render as HTML, so plain newlines collapse; use one <p> per line.
+    lines = [build_summary(layer, profile, record_count)]
     if profile["fields"]:
-        lines.append("Attributes:")
-        for name, alias, ftype in profile["fields"]:
+        lines.append("<b>Attributes:</b>")
+        for name, alias, _ftype in profile["fields"]:
             label = f"{name} ({alias})" if alias and alias != name else name
-            line = f"- {label}: {ftype.lower()}"
+            line = label
             values = profile["values"].get(name)
             if values:
-                line += "; common values: " + ", ".join(values)
-            lines.append(line)
-        lines.append("")
+                line += " - common values: " + ", ".join(values)
+            lines.append(escape(line, quote=False))
     lines.append(
-        f"Generated automatically from the field definitions and a sample of up to "
-        f"{sample_size} records; review before publishing."
+        f"<i>Generated automatically from the field definitions and a sample of up to "
+        f"{sample_size} records; review before publishing.</i>"
     )
-    return "\n".join(lines)
+    return "".join(f"<p>{line}</p>" for line in lines)
 
 
 def clean_tags(tags):
@@ -224,7 +229,8 @@ def log_connection_user(layer):
         pass
 
 
-def update_layer_tags(layer, sample_size, keep_existing, connection="", overwrite_text=False):
+def update_layer_tags(layer, sample_size, overwrite_tags, connection="",
+                      overwrite_summary=False, overwrite_description=False):
     """Write generated tags, summary and description. Returns (tag count, target)."""
     md = arcpy.metadata.Metadata(resolve_source(layer, connection))
     if md.isReadOnly:
@@ -244,21 +250,23 @@ def update_layer_tags(layer, sample_size, keep_existing, connection="", overwrit
         if md is None or md.isReadOnly:
             raise RuntimeError("both source and layer metadata are read-only")
 
-    existing = (md.tags or "").split(",") if keep_existing else []
+    existing = (md.tags or "").split(",") if not overwrite_tags else []
     # Existing tags come first so they are never pushed out by generated ones.
     new_tags, profile = build_tags(layer, sample_size)
     final_tags = clean_tags(existing + new_tags)[:MAX_TAGS]
     md.tags = ", ".join(final_tags)
 
     # Existing summary/description are only replaced when overwrite is requested.
-    if overwrite_text or not (md.summary or "").strip() or not (md.description or "").strip():
+    write_summary = overwrite_summary or not (md.summary or "").strip()
+    write_description = overwrite_description or not (md.description or "").strip()
+    if write_summary or write_description:
         try:
             record_count = int(arcpy.management.GetCount(layer).getOutput(0))
         except Exception:
             record_count = None
-        if overwrite_text or not (md.summary or "").strip():
+        if write_summary:
             md.summary = build_summary(layer, profile, record_count)
-        if overwrite_text or not (md.description or "").strip():
+        if write_description:
             md.description = build_description(layer, profile, record_count, sample_size)
     if target == "layer":
         layer.metadata = md
@@ -270,7 +278,8 @@ def update_layer_tags(layer, sample_size, keep_existing, connection="", overwrit
 def main():
     try:
         arcpy.AddMessage("Reading parameters...")
-        names, sample_size, keep_existing, connection, overwrite_text = get_parameters()
+        (names, sample_size, overwrite_tags,
+         overwrite_summary, overwrite_description, connection) = get_parameters()
 
         aprx = arcpy.mp.ArcGISProject("CURRENT")
         active_map = aprx.activeMap
@@ -293,7 +302,8 @@ def main():
             arcpy.SetProgressorLabel(f"Processing {layer.name}")
             try:
                 count, target = update_layer_tags(
-                    layer, sample_size, keep_existing, connection, overwrite_text
+                    layer, sample_size, overwrite_tags, connection,
+                    overwrite_summary, overwrite_description
                 )
                 updated += 1
                 if target == "layer":
