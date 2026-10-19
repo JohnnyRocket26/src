@@ -157,6 +157,7 @@ def delete_null_condition_records(feature_class, field_name="condition"):
     """
     Delete records where condition is NULL from the specified feature class.
     """
+    layer_name = None
     try:
         fields = arcpy.ListFields(feature_class)
         field_lookup = {f.name.lower(): f.name for f in fields}
@@ -191,10 +192,11 @@ def delete_null_condition_records(feature_class, field_name="condition"):
             f"Could not delete NULL condition records from {os.path.basename(feature_class)}: {str(e)}"
         )
     finally:
-        try:
-            arcpy.management.Delete(layer_name)
-        except Exception:
-            pass
+        if layer_name:
+            try:
+                arcpy.management.Delete(layer_name)
+            except Exception:
+                pass
 
 
 def apply_symbology(layer_name, field_name="RepairState"):
@@ -351,23 +353,15 @@ def refresh_active_view(layer_names=None):
     try:
         aprx = arcpy.mp.ArcGISProject("CURRENT")
         active_view = aprx.activeView
-        if active_view and hasattr(active_view, "refresh"):
-            active_view.refresh()
+        refresh_method = getattr(active_view, "refresh", None)
+        if callable(refresh_method):
+            refresh_method()
             arcpy.AddMessage("Refreshed active map view.")
             return
-        if hasattr(arcpy, "RefreshActiveView"):
-            arcpy.RefreshActiveView()
+        refresh_active_view = getattr(arcpy, "RefreshActiveView", None)
+        if callable(refresh_active_view):
+            refresh_active_view()
             arcpy.AddMessage("Refreshed active view using arcpy.RefreshActiveView().")
-            return
-        if layer_names and hasattr(arcpy.management, "RefreshLayer"):
-            for layer_name in layer_names:
-                try:
-                    arcpy.management.RefreshLayer(layer_name)
-                except Exception:
-                    pass
-            arcpy.AddMessage(
-                "Refreshed output layers using arcpy.management.RefreshLayer()."
-            )
             return
         arcpy.AddMessage("Active view refresh method not available in this context.")
     except Exception as e:
@@ -498,8 +492,8 @@ def CreateExportsForFieldMaps():
 
     # Define Outputs
     out_recorded_condition = os.path.join(workspace, "Recorded_Condition")
-    out_repair_section = os.path.join(workspace, "Repair_Short_Section")
-    out_repair_section_v2 = os.path.join(workspace, "Repair_Long_Section")
+    out_repair_short_section = os.path.join(workspace, "Repair_Short_Section")
+    out_repair_long_section = os.path.join(workspace, "Repair_Long_Section")
     out_centerlines = os.path.join(workspace, "CenterlinesExport")
     out_footpath = os.path.join(workspace, "FootpathExport")
     out_coverage_gaps = os.path.join(workspace, "FootpathCoverageGaps")
@@ -616,19 +610,19 @@ def CreateExportsForFieldMaps():
     add_project_name_field(out_recorded_condition, project_name)
     delete_null_condition_records(out_recorded_condition, "condition")
 
-    # Repair_Section_V1 - Export with POINT geometry and moving average field mapping
+    # Repair_Short_Section - Export with POINT geometry and moving average field mapping
     arcpy.AddMessage(
-        "Exporting Repair_Section_V1 (dropping fields, converting to POINT)..."
+        "Exporting Repair_Short_Section (dropping fields, converting to POINT)..."
     )
-    export_with_point_geometry(f_sorted, out_repair_section, fmap_repairV1)
-    add_project_name_field(out_repair_section, project_name)
+    export_with_point_geometry(f_sorted, out_repair_short_section, fmap_repairV1)
+    add_project_name_field(out_repair_short_section, project_name)
 
-    # Repair_Section_V2 - Export with POINT geometry and moving average field mapping
+    # Repair_Long_Section - Export with POINT geometry and moving average field mapping
     arcpy.AddMessage(
-        "Exporting Repair_Section_V2 (dropping fields, converting to POINT)..."
+        "Exporting Repair_Long_Section (dropping fields, converting to POINT)..."
     )
-    export_with_point_geometry(f_sorted, out_repair_section_v2, fmap_repairV2)
-    add_project_name_field(out_repair_section_v2, project_name)
+    export_with_point_geometry(f_sorted, out_repair_long_section, fmap_repairV2)
+    add_project_name_field(out_repair_long_section, project_name)
 
     arcpy.AddMessage("Exporting CenterlinesExport (dropping fields)...")
     arcpy.conversion.ExportFeatures(
@@ -661,8 +655,8 @@ if __name__ == "__main__":
     add_layers_to_active_map(
         [
             os.path.join(workspace, "Recorded_Condition"),
-            os.path.join(workspace, "Repair_Section_V1"),
-            os.path.join(workspace, "Repair_Section_V2"),
+            os.path.join(workspace, "Repair_Short_Section"),
+            os.path.join(workspace, "Repair_Long_Section"),
         ]
     )
 
@@ -671,5 +665,5 @@ if __name__ == "__main__":
         "unsupported for these output layers in this ArcGIS Pro runtime."
     )
     refresh_active_view(
-        ["Recorded_Condition", "Repair_Section_V1", "Repair_Section_V2"]
+        ["Recorded_Condition", "Repair_Short_Section", "Repair_Long_Section"]
     )
