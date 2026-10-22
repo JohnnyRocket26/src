@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Script tool (draft): renumber the layer ID (CIM serviceLayerID) of every
-non-group layer in the active map, in table-of-contents order.
+layer, including group layers, in the active map, in table-of-contents order.
 
 Tool parameters:
     0  Output Workspace   (Workspace, optional) - receives an old/new ID log table.
@@ -61,7 +61,8 @@ def main():
             raise ValueError("Starting Layer ID must be 0 or greater.")
         table_name = get_parameter(2, "Layer_ID_Log")
 
-        layers = [lyr for lyr in active_map.listLayers() if not lyr.isGroupLayer]
+        # listLayers() returns layers in table-of-contents order; group layers get an ID too.
+        layers = active_map.listLayers()
         total = len(layers)
         arcpy.AddMessage(f"Active map '{active_map.name}' contains {total} layer(s) to renumber.")
         if total == 0:
