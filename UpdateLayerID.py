@@ -10,7 +10,7 @@ Tool parameters:
     1  Starting Layer ID  (Long, optional, default 0)
     2  Log Table Name     (String, optional, default Layer_ID_Log)
 
-Run inside ArcGIS Pro 3.5 (Python 3.11). Save the project to keep the changes.
+Run inside ArcGIS Pro 3.5 (Python 3.11). Save the project to keep the changes..
 """
 
 import os
